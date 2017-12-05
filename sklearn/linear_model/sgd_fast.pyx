@@ -36,9 +36,9 @@ DEF ELASTICNET = 3
 DEF CONSTANT = 1
 DEF OPTIMAL = 2
 DEF INVSCALING = 3
-DEF PA1 = 4
-DEF PA2 = 5
-
+DEF BOLTON = 4
+DEF PA1 = 5
+DEF PA2 = 6
 
 # ----------------------------------------
 # Extension Types for Loss Functions
@@ -225,6 +225,30 @@ cdef class Log(Classification):
     def __reduce__(self):
         return Log, ()
 
+cdef class DPLog(Classification):
+    """Logistic regression loss for binary classification with y in {-1, 1}"""
+
+    cdef double loss(self, double p, double y) nogil:
+        cdef double z = p * y
+        # approximately equal and saves the computation of the log
+        if z > 18:
+            return exp(-z)
+        if z < -18:
+            return -z
+        return log(1.0 + exp(-z))
+
+    cdef double _dloss(self, double p, double y) nogil:
+        cdef double z = p * y
+        # approximately equal and saves the computation of the log
+        if z > 18.0:
+            return exp(-z) * -y
+        if z < -18.0:
+            return -y
+        return -y / (exp(z) + 1.0)
+
+    def __reduce__(self):
+        return Log, ()
+
 
 cdef class SquaredLoss(Regression):
     """Squared loss traditional used in linear regression."""
@@ -343,7 +367,10 @@ def plain_sgd(np.ndarray[double, ndim=1, mode='c'] weights,
               int learning_rate, double eta0,
               double power_t,
               double t=1.0,
-              double intercept_decay=1.0):
+              double intercept_decay=1.0,
+              double R=-1.0,
+              double beta=1.0,
+              double gamma=1.0):
     """Plain SGD for generic loss functions and penalties.
 
     Parameters
@@ -388,6 +415,7 @@ def plain_sgd(np.ndarray[double, ndim=1, mode='c'] weights,
         (3) inverse scaling, eta = eta0 / pow(t, power_t)
         (4) Passive Agressive-I, eta = min(alpha, loss/norm(x))
         (5) Passive Agressive-II, eta = 1.0 / (norm(x) + 0.5*alpha)
+        (6) Bolt-on (SC), eta = min(1/beta, 1/(gamma*t))
     eta0 : double
         The initial learning rate.
     power_t : double
@@ -423,7 +451,10 @@ def plain_sgd(np.ndarray[double, ndim=1, mode='c'] weights,
                                    power_t,
                                    t,
                                    intercept_decay,
-                                   0)
+                                   0,
+                                   R,
+                                   beta,
+                                   gamma)
     return standard_weights, standard_intercept, n_iter_
 
 
@@ -492,6 +523,7 @@ def average_sgd(np.ndarray[double, ndim=1, mode='c'] weights,
         (3) inverse scaling, eta = eta0 / pow(t, power_t)
         (4) Passive Aggressive-I, eta = min(alpha, loss/norm(x))
         (5) Passive Aggressive-II, eta = 1.0 / (norm(x) + 0.5*alpha)
+        (6) Bolt-on SC, eta = min(1/beta, 1/gamma*t)
     eta0 : double
         The initial learning rate.
     power_t : double
@@ -552,7 +584,9 @@ def _plain_sgd(np.ndarray[double, ndim=1, mode='c'] weights,
                double power_t,
                double t=1.0,
                double intercept_decay=1.0,
-               int average=0):
+               int average=0,
+               double R=-1.0,
+               double beta=1.0, double gamma=1.0):
 
     # get the data information into easy vars
     cdef Py_ssize_t n_samples = dataset.n_samples
@@ -625,6 +659,8 @@ def _plain_sgd(np.ndarray[double, ndim=1, mode='c'] weights,
                     eta = 1.0 / (alpha * (optimal_init + t - 1))
                 elif learning_rate == INVSCALING:
                     eta = eta0 / pow(t, power_t)
+                elif learning_rate == BOLTON:
+                    eta = min(1/beta, 1/(gamma*epoch))
 
                 sumloss += loss.loss(p, y)
 
@@ -669,6 +705,10 @@ def _plain_sgd(np.ndarray[double, ndim=1, mode='c'] weights,
                     w.add(x_data_ptr, x_ind_ptr, xnnz, update)
                     if fit_intercept == 1:
                         intercept += update * intercept_decay
+                if R > 0:
+                    if w.norm() > R:
+                        # contraint SGD to the ball of radius R
+                        w.scale(R / w.norm())
 
                 if 0 < average <= t:
                     # compute the average for the intercept and update the
@@ -691,9 +731,9 @@ def _plain_sgd(np.ndarray[double, ndim=1, mode='c'] weights,
             if verbose > 0:
                 with gil:
                     print("Norm: %.2f, NNZs: %d, Bias: %.6f, T: %d, "
-                          "Avg. loss: %f"
+                          "Avg. loss: %f, learning_rate: %.4f"
                           % (w.norm(), weights.nonzero()[0].shape[0],
-                             intercept, count, sumloss / n_samples))
+                             intercept, count, sumloss / n_samples, eta))
                     print("Total training time: %.2f seconds."
                           % (time() - t_start))
 

@@ -6,6 +6,7 @@
 
 import numpy as np
 import warnings
+from random import gauss
 
 from abc import ABCMeta, abstractmethod
 
@@ -35,7 +36,7 @@ from .sgd_fast import SquaredEpsilonInsensitive
 
 
 LEARNING_RATE_TYPES = {"constant": 1, "optimal": 2, "invscaling": 3,
-                       "pa1": 4, "pa2": 5}
+                       "pa1": 5, "pa2": 6, "bolton": 4}
 
 PENALTY_TYPES = {"none": 0, "l2": 2, "l1": 1, "elasticnet": 3}
 
@@ -268,7 +269,7 @@ def _prepare_fit_binary(est, y, i):
 
 
 def fit_binary(est, i, X, y, alpha, C, learning_rate, max_iter,
-               pos_weight, neg_weight, sample_weight):
+               pos_weight, neg_weight, sample_weight, R=-1.0, beta=1.0, gamma=1.0):
     """Fit a single binary classifier.
 
     The i'th class is considered the "positive" class.
@@ -298,7 +299,7 @@ def fit_binary(est, i, X, y, alpha, C, learning_rate, max_iter,
                          int(est.verbose), int(est.shuffle), seed,
                          pos_weight, neg_weight,
                          learning_rate_type, est.eta0,
-                         est.power_t, est.t_, intercept_decay)
+                         est.power_t, est.t_, intercept_decay, R, beta, gamma)
 
     else:
         standard_coef, standard_intercept, average_coef, average_intercept, \
@@ -318,6 +319,10 @@ def fit_binary(est, i, X, y, alpha, C, learning_rate, max_iter,
             est.average_intercept_[i] = average_intercept
 
         return standard_coef, standard_intercept, n_iter_
+
+def make_rand_vector(dims):
+    vec = np.array([gauss(0, 1) for i in range(dims)])
+    return vec / np.linalg.norm(vec)
 
 
 class BaseSGDClassifier(six.with_metaclass(ABCMeta, BaseSGD,
@@ -369,7 +374,7 @@ class BaseSGDClassifier(six.with_metaclass(ABCMeta, BaseSGD,
     def _partial_fit(self, X, y, alpha, C,
                      loss, learning_rate, max_iter,
                      classes, sample_weight,
-                     coef_init, intercept_init):
+                     coef_init, intercept_init, R=-1.0, beta=1.0, gamma=1.0):
         X, y = check_X_y(X, y, 'csr', dtype=np.float64, order="C")
 
         n_samples, n_features = X.shape
@@ -404,7 +409,7 @@ class BaseSGDClassifier(six.with_metaclass(ABCMeta, BaseSGD,
             self._fit_binary(X, y, alpha=alpha, C=C,
                              learning_rate=learning_rate,
                              sample_weight=sample_weight,
-                             max_iter=max_iter)
+                             max_iter=max_iter, R=R, beta=beta, gamma=gamma)
         else:
             raise ValueError(
                 "The number of classes has to be greater than one;"
@@ -413,7 +418,7 @@ class BaseSGDClassifier(six.with_metaclass(ABCMeta, BaseSGD,
         return self
 
     def _fit(self, X, y, alpha, C, loss, learning_rate, coef_init=None,
-             intercept_init=None, sample_weight=None):
+             intercept_init=None, sample_weight=None, R=-1.0, beta=1.0, gamma=1.0):
         self._validate_params()
         if hasattr(self, "classes_"):
             self.classes_ = None
@@ -444,7 +449,7 @@ class BaseSGDClassifier(six.with_metaclass(ABCMeta, BaseSGD,
         self.t_ = 1.0
 
         self._partial_fit(X, y, alpha, C, loss, learning_rate, self._max_iter,
-                          classes, sample_weight, coef_init, intercept_init)
+                          classes, sample_weight, coef_init, intercept_init,R,beta,gamma)
 
         if (self._tol is not None and self._tol > -np.inf
                 and self.n_iter_ == self._max_iter):
@@ -455,13 +460,13 @@ class BaseSGDClassifier(six.with_metaclass(ABCMeta, BaseSGD,
         return self
 
     def _fit_binary(self, X, y, alpha, C, sample_weight,
-                    learning_rate, max_iter):
+                    learning_rate, max_iter,R, beta, gamma):
         """Fit a binary classifier on X and y. """
         coef, intercept, n_iter_ = fit_binary(self, 1, X, y, alpha, C,
                                               learning_rate, max_iter,
                                               self._expanded_class_weight[1],
                                               self._expanded_class_weight[0],
-                                              sample_weight)
+                                              sample_weight,R,beta,gamma)
 
         self.t_ += n_iter_ * X.shape[0]
         self.n_iter_ = n_iter_
@@ -513,7 +518,7 @@ class BaseSGDClassifier(six.with_metaclass(ABCMeta, BaseSGD,
                 self.standard_intercept_ = np.atleast_1d(self.intercept_)
                 self.intercept_ = self.standard_intercept_
 
-    def partial_fit(self, X, y, classes=None, sample_weight=None):
+    def partial_fit(self, X, y, classes=None, sample_weight=None, R=-1.0):
         """Fit linear model with Stochastic Gradient Descent.
 
         Parameters
@@ -553,10 +558,10 @@ class BaseSGDClassifier(six.with_metaclass(ABCMeta, BaseSGD,
         return self._partial_fit(X, y, alpha=self.alpha, C=1.0, loss=self.loss,
                                  learning_rate=self.learning_rate, max_iter=1,
                                  classes=classes, sample_weight=sample_weight,
-                                 coef_init=None, intercept_init=None)
+                                 coef_init=None, intercept_init=None, R=R)
 
     def fit(self, X, y, coef_init=None, intercept_init=None,
-            sample_weight=None):
+            sample_weight=None, R=-1.0, beta=1.0, gamma=1.0):
         """Fit linear model with Stochastic Gradient Descent.
 
         Parameters
@@ -586,7 +591,7 @@ class BaseSGDClassifier(six.with_metaclass(ABCMeta, BaseSGD,
         return self._fit(X, y, alpha=self.alpha, C=1.0,
                          loss=self.loss, learning_rate=self.learning_rate,
                          coef_init=coef_init, intercept_init=intercept_init,
-                         sample_weight=sample_weight)
+                         sample_weight=sample_weight,R=R,beta=beta,gamma=gamma)
 
 
 class SGDClassifier(BaseSGDClassifier):
@@ -844,6 +849,38 @@ class SGDClassifier(BaseSGDClassifier):
         """
         self._check_proba()
         return self._predict_proba
+
+    @property
+    def bolt_on(self):
+        return self._bolt_on
+
+    def _bolt_on(self, epsilon, m):
+        """
+        only works for logistic regression for now.
+        intercept must be included in training manually for now.
+        """
+        if self.loss == "log":
+            if self.penalty == 'l2':
+                # strongly-convex loss function
+                # sensitivity Parameters
+                L = 2 # since we set R = 1/self.alpha
+                beta = 1 + self.alpha
+                gamma = self.alpha
+
+                if self.learning_rate == 'constant':
+                    L2_sensitivity = (2*self.eta0*L)/(1 - (1-self.eta0*gamma)**m)
+                elif self.learning_rate == 'bolton':
+                    L2_sensitivity = (2*L) / (gamma*m)
+
+                # sampling from the associated Laplace distribution
+                v = make_rand_vector(self.coef_.shape[1])
+                magnitude = np.random.gamma(self.coef_.shape[1], L2_sensitivity/epsilon)
+                noise = v*magnitude
+
+                # add noise to coef
+                self.coef_ = self.coef_ + noise
+
+
 
     def _predict_proba(self, X):
         if self.loss == "log":
